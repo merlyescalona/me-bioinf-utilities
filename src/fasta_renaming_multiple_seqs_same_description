@@ -1,0 +1,108 @@
+#!/usr/bin/python
+import gzip, argparse,datetime, collections, csv, os, sys, filetype, logging, copy
+import numpy as np
+# ========================================================================================
+PROGRAM_NAME="fasta_renaming_multiple_seqs_same_description"
+VERSION=1
+MIN_VERSION=0
+FIX_VERSION=0
+# ========================================================================================
+APPLOGGER = logging.getLogger(PROGRAM_NAME)
+APPLOGGER.setLevel(logging.DEBUG)
+ch = logging.StreamHandler()
+ch.setLevel(logging.DEBUG)
+loggerFormatter = logging.Formatter(\
+  fmt = "[%(asctime)s]  %(levelname)s (%(funcName)s|%(lineno)d): %(message)s",\
+  datefmt = "%d/%m/%Y %I:%M:%S %p")
+ch.setFormatter(loggerFormatter)
+APPLOGGER.addHandler(ch)
+#=========================================================================================
+
+def run(parameters):
+    try:
+        APPLOGGER.info("Starting...")
+        # Generating scaffolds/contigs  with no modifications
+        import fileinput
+        counter=1
+        for line in fileinput.FileInput(parameters['genome_filename'],inplace=1):
+            if ">" in line:
+                line=line.replace(line,"{}_ID_{}".format(line, counter))
+                counter+=1
+            print(line.replace("\n",""))
+    except Exception as ex:
+        return -1, ex.message
+    return 0,"Done."
+
+def main():
+    parser = argparse.ArgumentParser(\
+    prog=PROGRAM_NAME,\
+        description='Renames sequences (adding a counter) as suffix'+\
+            ' in the sequence descriptions. Inline editing.',\
+        add_help=True\
+    )
+    requiredArgs=parser.add_argument_group("{0}Required arguments{1}".format("\033[1m","\033[0m"))
+    requiredArgs.add_argument(\
+        '-i','--input',\
+        metavar = '<sequences.fasta>',\
+        type = str,\
+        required = True,\
+        help = 'Filepath of the FASTA file to be used (accepts .gz.)')
+    optionalArts=parser.add_argument_group("{0}Optional arguments{1}".format("\033[1m","\033[0m"))
+    optionalArts.add_argument(\
+        '-l','--log',\
+        metavar = '<log_level>',\
+        type = str,\
+        choices = ['INFO','DEBUG'],\
+        default= 'INFO',\
+        help = 'Verbosity levels.')
+    informationGroup= parser.add_argument_group("{0}Information arguments{1}".format("\033[1m","\033[0m"))
+    informationGroup.add_argument('-v', '--version',\
+        action='version',\
+        version='{0}: Version {1}.{2}.{3}'.format(PROGRAM_NAME,VERSION,MIN_VERSION,FIX_VERSION),\
+        help="Show program's version number and exit")
+    try:
+        args=parser.parse_args()
+        parameters=dict()
+        # Checking files
+        if args.log == 'DEBUG':
+            APPLOGGER.setLevel(logging.DEBUG)
+        else:
+            APPLOGGER.setLevel(logging.INFO)
+        APPLOGGER.debug(args)
+        # Checking input file
+        if (os.path.exists(os.path.abspath(args.input))):
+            REFFILE=os.path.abspath(args.input)
+        else:
+            message="Reference file does not exist. Please verify. Exiting."
+            return (-1, message)
+        parameters['genome_filename']=REFFILE
+        return run(parameters)
+    except:
+        message="Parsing error. Exiting"
+        return (-1, message)
+
+
+if __name__ == "__main__":
+    SIGNAL_EXIT,MESSAGE=main()
+    if SIGNAL_EXIT == -1:
+        APPLOGGER.error(MESSAGE)
+    else:
+        APPLOGGER.info(MESSAGE)
+    sys.exit(SIGNAL_EXIT)
+
+# APPLOGGER.info("Starting...")
+# scaffolds=readGenomeAssembly(parameters)
+# edits=readEditsFile(parameters,scaffolds)
+# newscaffolds=[]
+# contigs=[]
+# newoutput=parameters['output_full']
+# newoutput2=parameters['output_contigs']
+
+
+# assemblyfile="/scratch1/merly/Mende/HG03486.assembly.3.fasta"
+# editsfile="/scratch1/merly/Mende/gapfilling/mende.3.full.edits.txt"
+# newoutput="/scratch1/merly/Mende/HG03486.assembly.4.fasta"
+# newoutput2="/scratch1/merly/Mende/HG03486.assembly.5.fasta"
+
+
+

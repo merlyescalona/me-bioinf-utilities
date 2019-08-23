@@ -1,0 +1,174 @@
+#!/usr/bin/python
+import pysam,gzip,  argparse,datetime, collections, csv, os, sys, filetype, logging
+import numpy as np
+from Bio import SeqIO
+
+# ========================================================================================
+PROGRAM_NAME="extract_sequences_from_fasta"
+VERSION=2
+MIN_VERSION=0
+FIX_VERSION=0
+# ========================================================================================
+APPLOGGER = logging.getLogger(PROGRAM_NAME)
+APPLOGGER.setLevel(logging.DEBUG)
+ch = logging.StreamHandler()
+ch.setLevel(logging.DEBUG)
+loggerFormatter = logging.Formatter(\
+  fmt = "[%(asctime)s]  %(levelname)s (%(funcName)s|%(lineno)d): %(message)s",\
+  datefmt = "%d/%m/%Y %I:%M:%S %p")
+ch.setFormatter(loggerFormatter)
+APPLOGGER.addHandler(ch)
+
+def run(parameters):
+  message="All correct."
+  APPLOGGER.info("Reading file...")
+  handle=None
+  filekind=filetype.guess(parameters['input'])
+  if filekind and filekind.extension in ['gz','GZ','gZ','Gz']:
+    APPLOGGER.info("Running gzip...")
+    handle=gzip.open(parameters['input'], "rt")
+  else:
+    handle=open(parameters['input'], "rt")
+  selected_sequences=read_descriptor_file(parameters)
+  APPLOGGER.info("Creating output file...")
+  APPLOGGER.info("Parsing FASTA file...")
+  for record in SeqIO.parse(handle, "fasta"):
+    if (record.id in selected_sequences):
+      with open(parameters['output'], "ab") as outhandle:
+        _=SeqIO.write(record,outhandle,"fasta")
+  APPLOGGER.info("Closing files...")
+  handle.close()
+  return True, message
+
+def read_descriptor_file(parameters):
+  selected_sequences=[]
+  selected_sequences2=[]
+  except_sequences=[]
+  #############################################################################
+  APPLOGGER.info("Getting reference identifiers...")
+  handle=None
+  filekind=filetype.guess(parameters['input'])
+  if filekind and filekind.extension in ['gz','GZ','gZ','Gz']:
+    APPLOGGER.info("Running gzip...")
+    handle=gzip.open(parameters['input'], "rt")
+  else:
+    handle=open(parameters['input'], "rt")
+  for record in SeqIO.parse(handle, "fasta"):
+    selected_sequences+=[record.id]
+  handle.close()
+  #############################################################################
+  if parameters['name']:
+    selected_sequences2=[parameters['name']]
+  if parameters['selected_sequences_filename']:
+    with open(parameters['selected_sequences_filename'], "rb") as handle:
+      for line in handle.readlines():
+        selected_sequences2+=[line.strip()]
+  # If I have a list of identifiers I will only keep those
+  if len(selected_sequences2) > 0:
+    selected_sequences=selected_sequences2
+  if parameters['except_sequences_filename']:
+    with open(parameters['except_sequences_filename'], "rb") as handle:
+      for line in handle.readlines():
+        except_sequences+=[line.strip()]
+  selected_sequences=[i for i in selected_sequences if not i in except_sequences]
+  APPLOGGER.info("Keeping {}  sequences...".format(len(selected_sequences)))
+  return selected_sequences
+
+def main():
+  parser = argparse.ArgumentParser(\
+  prog=PROGRAM_NAME,\
+    description='Extracts sequences from a multiple sequence FASTA file given sequence descriptions/IDs',\
+    add_help=True\
+  )
+  requiredArgs=parser.add_argument_group("{0}required arguments{1}".format("\033[1m","\033[0m"))
+  requiredArgs.add_argument(\
+    '-i','--input',\
+    metavar = '<multiple_sequences.fasta>',\
+    type = str,\
+    required = True,\
+    help = 'Filepath of the reference genome file to be used.')
+  requiredArgs.add_argument(\
+    '-o','--output',\
+    metavar = '<file_path>',\
+    type = str,\
+    required = True,\
+    help = 'Output file path.')
+  seqArgs=parser.add_argument_group("{0}sequence selection arguments{1} At least one should be used".format("\033[1m","\033[0m"))
+  seqArgs.add_argument(\
+    '-n','--name',\
+    metavar = '<sequences.name>',\
+    type = str,\
+    help = 'Identifier of the sequence to be extrcted.')
+  seqArgs.add_argument(\
+    '-f','--file-multiple-sequences',\
+    metavar = '<file_path>',\
+    type = str,\
+    help = 'Filepath with multiple sequence descriptors. Line per descriptor.')
+  seqArgs.add_argument(\
+    '-e','--file-except-multiple-sequences',\
+    metavar = '<file_path>',\
+    type = str,\
+    help = 'Filepath with multiple sequence descriptors. Line per descriptor.')
+  informationGroup= parser.add_argument_group("{0}information arguments{1}".format("\033[1m","\033[0m"))
+  informationGroup.add_argument(\
+    '-l','--log',\
+    metavar = '<log_level>',\
+    type = str,\
+    choices = ['INFO','DEBUG'],\
+    default= 'INFO',\
+    help = 'Verbosity levels.')
+  informationGroup.add_argument('-v', '--version',\
+    action='version',\
+    version='{0}: Version {1}.{2}.{3}'.format(PROGRAM_NAME,VERSION,MIN_VERSION,FIX_VERSION),\
+    help="Show program's version number and exit")
+  try:
+    args = parser.parse_args()  
+    APPLOGGER.debug(args)
+    parameters=dict()
+    # Checking files
+    if args.log == 'DEBUG':
+      APPLOGGER.setLevel(logging.DEBUG)
+    else:
+      APPLOGGER.setLevel(logging.INFO)
+    if (os.path.exists(os.path.abspath(args.input))):
+      REFFILE=os.path.abspath(args.input)
+    else:
+      message="Reference file does not exist. Please verify. Exiting."
+      return (-1, message)
+    OUTPUT=os.path.abspath(args.output)
+    if (os.path.exists(OUTPUT)):
+      message="Output file exist. Not overwriting. Please verify. Exiting."
+      return (-1, message)
+    if not (args.name or args.file_multiple_sequences or args.file_except_multiple_sequences):
+        message="At least one of the following options should be selected (-n/-f/-e). Please verify. Exiting."
+        parser.error(message)
+    parameters['output']=OUTPUT
+    parameters['input']=REFFILE
+    parameters['name']=None
+    parameters['selected_sequences_filename']=None
+    parameters['except_sequences_filename']=None
+    if args.name: 
+      parameters['name']=args.name
+    if args.file_multiple_sequences:
+      parameters['selected_sequences_filename']=os.path.abspath(args.file_multiple_sequences)
+      if not os.path.exists(os.path.abspath(args.file_multiple_sequences)):
+        message="Output file exist. Not overwriting. Please verify. Exiting."
+        return (-1, message)
+    if args.file_except_multiple_sequences:
+      parameters['except_sequences_filename']=os.path.abspath(args.file_except_multiple_sequences)
+      if not os.path.exists(os.path.abspath(args.file_except_multiple_sequences)):
+        message="Output file exist. Not overwriting. Please verify. Exiting."
+        return (-1, message)
+    return run(parameters)
+  except:
+    print("="*80)
+    message="Exiting"
+    return (-1, message)
+
+if __name__ == "__main__":
+  SIGNAL_EXIT,MESSAGE=main()
+  if SIGNAL_EXIT == -1:
+    APPLOGGER.error(MESSAGE)
+  else:
+    APPLOGGER.info(MESSAGE)
+  sys.exit(SIGNAL_EXIT)

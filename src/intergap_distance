@@ -1,0 +1,182 @@
+#!/usr/bin/python
+import pysam,gzip, argparse,datetime, collections, csv, os, sys, filetype, logging
+import numpy as np
+from Bio import SeqIO, Seq
+
+# ========================================================================================
+PROGRAM_NAME="intergap_distance"
+VERSION=1
+MIN_VERSION=0
+FIX_VERSION=0
+# ========================================================================================
+APPLOGGER = logging.getLogger(PROGRAM_NAME)
+APPLOGGER.setLevel(logging.DEBUG)
+ch = logging.StreamHandler()
+ch.setLevel(logging.DEBUG)
+loggerFormatter = logging.Formatter(\
+  fmt = "[%(asctime)s]  %(levelname)s (%(funcName)s|%(lineno)d): %(message)s",\
+  datefmt = "%d/%m/%Y %I:%M:%S %p")
+ch.setFormatter(loggerFormatter)
+APPLOGGER.addHandler(ch)
+#=========================================================================================
+def readGenomeAssembly(parameters):
+    # read genome assembly file
+    scaffolds=dict()
+    APPLOGGER.info("Reading genome file...")
+    handle=None
+    filekind=filetype.guess(parameters['genome_filename'])
+    if filekind and filekind.extension in ['gz','GZ','gZ','Gz']:
+        APPLOGGER.info("Running gzip...")
+        handle=gzip.open(parameters['genome_filename'], "rt")
+    else:
+        handle=open(parameters['genome_filename'], "rt")
+    scaffolds=SeqIO.to_dict(SeqIO.parse(handle, "fasta")) 
+    handle.close()
+    return scaffolds
+
+def readBedFile(parameters):
+    #read bedfile
+    APPLOGGER.info("Reading BED file...")
+    handle=None
+    filekind=filetype.guess(parameters['bed_filename'])
+    if filekind and filekind.extension in ['gz','GZ','gZ','Gz']:
+        APPLOGGER.info("Running gzip...")
+        handle=gzip.open(parameters['bed_filename'], "rt")
+    else:
+        handle=open(parameters['bed_filename'], "rt")
+    bed=dict()
+    bedCounter=1
+    for line in handle:
+        bedline=line.strip().split()
+        try:
+            gapId=bed[bedline[0]][-1][1]+1
+            bed[bedline[0]]+=[(bedCounter,gapId, int(bedline[1]), int(bedline[2]), int(bedline[2])-int(bedline[1]))]     
+        except:
+            bed[bedline[0]]=[(bedCounter,0, int(bedline[1]), int(bedline[2]), int(bedline[2])-int(bedline[1]))]     
+        bedCounter+=1
+    handle.close()
+    return bed
+# Calculate intergap distance
+
+def run(parameters):
+    APPLOGGER.info("Starting")
+    scaffolds=readGenomeAssembly(parameters)
+    bed=readBedFile(parameters)
+    try:
+        intergapdistancefile='{}/{}.gap.interdistance.txt'.format(\
+            parameters['output_path'],parameters['prefix'])
+        distances=[]
+        with open(intergapdistancefile, 'wb') as f: 
+            for scaffold in scaffolds:
+                try:
+                    gaps=bed[scaffold]
+                    for g in range(1,len(gaps)):
+                        print(gaps[g])
+                        value=gaps[g][2]-gaps[g-1][3]
+                        f.write("{:25}\t{:5}\t{:5}\t{}\n".format(scaffold, g, g-1,value))
+                except:
+                    pass
+        print("Intergap distances... ({})".format(intergapdistancefile))
+        return 0,"Done"
+    except Exception as e:
+        return -1, e.message
+
+
+def main():
+    parser = argparse.ArgumentParser(\
+    prog=PROGRAM_NAME,\
+        description='''Calculates intergap distance of a specific genome assembly.\n
+Generates a file with the format:\nScaffold    gapid_i     gapid_i+1   distance \n
+Needs the genome assembly file (Fasta or GZ) and the BED file describing the gaps.''',\
+        add_help=False\
+    )
+    requiredArgs=parser.add_argument_group("{0}Required arguments{1}".format("\033[1m","\033[0m"))
+    requiredArgs.add_argument(\
+        '-i','--input',\
+        metavar = '<sequences.fasta>',\
+        type = str,\
+        required = True,\
+        help = 'Filepath of the reference genome file to be used (accepts .gz.)')
+    requiredArgs.add_argument(\
+        '-o','--output',\
+        metavar = '<file_path>',\
+        type = str,\
+        required = True,\
+        help = 'Output file path. (Folder)')        
+    requiredArgs.add_argument(\
+        '-b','--bed',\
+        metavar = '<file_path>',\
+        type = str,\
+        required = True,\
+        help = 'BED file with the position of the gaps (accepts .gz).')        
+    requiredArgs.add_argument(\
+        '-p','--prefix',\
+        metavar = '<name>',\
+        type = str,\
+        required = True,\
+        help = 'Prefix of the output file')     
+    optionalArts=parser.add_argument_group("{0}Optional arguments{1}".format("\033[1m","\033[0m"))
+    optionalArts.add_argument(\
+        '-l','--log',\
+        metavar = '<log_level>',\
+        type = str,\
+        choices = ['INFO','DEBUG'],\
+        default= 'INFO',\
+        help = 'Verbosity levels.')
+    informationGroup= parser.add_argument_group("{0}Information arguments{1}".format("\033[1m","\033[0m"))
+    informationGroup.add_argument('-v', '--version',\
+        action='version',\
+        version='{0}: Version {1}.{2}.{3}'.format(PROGRAM_NAME,VERSION,MIN_VERSION,FIX_VERSION),\
+        help="Show program's version number and exit")
+    informationGroup.add_argument('-h', '--help',\
+        action='store_true',\
+        help="Show this help message and exit")         
+    try:
+        args=parser.parse_args()
+        APPLOGGER.debug(args)
+        parameters=dict()
+        if args.help: 
+            return(0,"Finished")
+        # Checking files
+        if args.log == 'DEBUG':
+            APPLOGGER.setLevel(logging.DEBUG)
+        else:
+			APPLOGGER.setLevel(logging.INFO)
+        # Checking input file
+        if (os.path.exists(os.path.abspath(args.input))):
+			REFFILE=os.path.abspath(args.input)
+        else:
+			message="Reference file does not exist. Please verify. Exiting."
+			return (-1, message)
+        # Checking output file
+        if not (os.path.exists(os.path.abspath(args.output))):
+			message="Output file does not exist. Please verify. Exiting."
+			return (-1, message)
+        else:
+			OUTPUT=os.path.abspath(args.output)
+        # Checking bed file
+        if (os.path.exists(os.path.abspath(args.bed))):
+			BEDFILE=os.path.abspath(args.bed)
+        else:
+            message="BED file, with the description of the gaps of the given genome, does not exist. Please verify. Exiting."
+            return (-1, message)
+        # Checking edits file
+
+        parameters['genome_filename']=REFFILE
+        parameters['prefix']=args.prefix
+        parameters['bed_filename']=BEDFILE
+        parameters['output_path']=OUTPUT
+        return run(parameters)
+    except Exception as e:
+        message="Parsing error. Exiting"
+        parser.print_help()
+        return (-1, "{}\n{}".format(e.message, message))
+
+
+if __name__ == "__main__":
+    SIGNAL_EXIT,MESSAGE=main()
+    if SIGNAL_EXIT == -1:
+        APPLOGGER.error(MESSAGE)
+    else:
+        APPLOGGER.info(MESSAGE)
+    sys.exit(SIGNAL_EXIT)

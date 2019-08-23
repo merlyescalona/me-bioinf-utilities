@@ -1,0 +1,140 @@
+#!/usr/bin/python
+import pysam,gzip,  argparse,datetime, collections, csv, os, sys, filetype, logging
+import numpy as np
+from Bio import SeqIO
+
+# ========================================================================================
+PROGRAM_NAME="sequences_lengths"
+VERSION=1
+MIN_VERSION=0
+FIX_VERSION=0
+# ========================================================================================
+APPLOGGER = logging.getLogger(PROGRAM_NAME)
+APPLOGGER.setLevel(logging.DEBUG)
+ch = logging.StreamHandler()
+ch.setLevel(logging.DEBUG)
+loggerFormatter = logging.Formatter(\
+  fmt = "[%(asctime)s]  %(levelname)s (%(funcName)s|%(lineno)d): %(message)s",\
+  datefmt = "%d/%m/%Y %I:%M:%S %p")
+ch.setFormatter(loggerFormatter)
+APPLOGGER.addHandler(ch)
+
+def run(parameters):
+  message="All correct."
+  APPLOGGER.info("Reading file...")
+  handle=None
+  filekind=filetype.guess(parameters['input'])
+  if filekind and filekind.extension in ['gz','GZ','gZ','Gz']:
+    APPLOGGER.info("Running gzip...")
+    handle=gzip.open(parameters['input'], "rt")
+  else:
+    handle=open(parameters['input'], "rt")
+  APPLOGGER.info("Creating output file...")
+  out=open(parameters['output'], "wb")
+  sclist=[]
+  if parameters['scaffolds_filename']:
+    sclist=readScaffoldList(parameters)
+  APPLOGGER.info("Parsing FASTA file...")
+  for record in SeqIO.parse(handle, "fasta"):
+    if len(sclist) > 0:
+      if record.id in sclist:
+        out.write("{}\t{}\n".format(record.id, len(record.seq)))
+    else:
+      out.write("{}\t{}\n".format(record.id, len(record.seq)))
+  handle.close()
+  out.close()
+  APPLOGGER.info("Closing files...")
+  return True, message
+
+
+def readScaffoldList(parameters):
+  APPLOGGER.info("Parsing scaffold list...")
+  sclist=[]
+  with open(parameters['scaffolds_filename'], 'rb') as handle:
+    for i in handle.readlines():
+      sclist+=[i.strip()]
+  return sclist
+
+def main():
+  parser = argparse.ArgumentParser(\
+  prog=PROGRAM_NAME,\
+    description='Extracts lenght of the sequences in a FASTA file',\
+    add_help=False\
+  )
+  requiredArgs=parser.add_argument_group("{0}Required arguments{1}".format("\033[1m","\033[0m"))
+  requiredArgs.add_argument(\
+    '-i','--input',\
+    metavar = '<sequences.fasta>',\
+    type = str,\
+    required = True,\
+    help = 'Filepath of the reference genome file to be used.')
+  requiredArgs.add_argument(\
+    '-o','--output',\
+    metavar = '<file_path>',\
+    type = str,\
+    required = True,\
+    help = 'Output file path.')
+  optionalArts=parser.add_argument_group("{0}Optional arguments{1}".format("\033[1m","\033[0m"))
+  optionalArts.add_argument(\
+    '-s','--scaffolds',\
+    metavar = '<filepath>',\
+    type = str,\
+    help = 'Path of the file with the list of sequences from which the user wants the length information.')
+  optionalArts.add_argument(\
+    '-l','--log',\
+    metavar = '<log_level>',\
+    type = str,\
+    choices = ['INFO','DEBUG'],\
+    default= 'INFO',\
+    help = 'Verbosity levels.')
+  informationGroup= parser.add_argument_group("{0}Information arguments{1}".format("\033[1m","\033[0m"))
+  informationGroup.add_argument('-v', '--version',\
+    action='version',\
+    version='{0}: Version {1}.{2}.{3}'.format(PROGRAM_NAME,VERSION,MIN_VERSION,FIX_VERSION),\
+    help="Show program's version number and exit")
+  informationGroup.add_argument('-h', '--help',\
+    action='store_true',\
+    help="Show this help message and exit")
+  try:
+    args = parser.parse_args()  
+    APPLOGGER.debug(args)
+    parameters=dict()
+    if args.help:
+      return(0,"Finihed")
+    # Checking files
+    if args.log == 'DEBUG':
+      APPLOGGER.setLevel(logging.DEBUG)
+    else:
+      APPLOGGER.setLevel(logging.INFO)
+    if (os.path.exists(os.path.abspath(args.input))):
+      REFFILE=os.path.abspath(args.input)
+    else:
+      message="Reference file does not exist. Please verify. Exiiting."
+      return (-1, message)
+    OUTPUT=os.path.abspath(args.output)
+    if (os.path.exists(OUTPUT)):
+      message="Output file exist. Not overwriting. Please verify. Exiiting."
+      return (-1, message)
+    if args.scaffolds:
+      if os.path.exists(args.scaffolds):
+        parameters['scaffolds_filename']=args.scaffolds
+      else:
+        message="Output file exist. Not overwriting. Please verify. Exiiting."
+        return (-1, message)
+    else:
+      parameters['scaffolds_filename']=None
+    parameters['output']=OUTPUT
+    parameters['input']=REFFILE
+    return run(parameters)
+  except:
+    message="Parsing error. Exiting"
+    parser.print_help()
+    return (-1, message)
+
+if __name__ == "__main__":
+  SIGNAL_EXIT,MESSAGE=main()
+  if SIGNAL_EXIT == -1:
+    APPLOGGER.error(MESSAGE)
+  else:
+    APPLOGGER.info(MESSAGE)
+  sys.exit(SIGNAL_EXIT)

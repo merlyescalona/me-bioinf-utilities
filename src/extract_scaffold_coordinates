@@ -1,0 +1,133 @@
+#!/usr/bin/python
+import datetime,os,csv,glob, argparse, logging,pysam,gzip, filetype, sys,copy
+import numpy as np
+from Bio import SeqIO, Seq
+# ========================================================================================
+PROGRAM_NAME="extract. scaffold.cooridnates"
+VERSION=1
+MIN_VERSION=0
+FIX_VERSION=0
+# ========================================================================================
+APPLOGGER = logging.getLogger(PROGRAM_NAME)
+APPLOGGER.setLevel(logging.DEBUG)
+ch = logging.StreamHandler()
+ch.setLevel(logging.DEBUG)
+loggerFormatter = logging.Formatter(\
+    fmt = "[%(asctime)s]  %(levelname)s (%(funcName)s|%(lineno)d): %(message)s",\
+    datefmt = "%d/%m/%Y %I:%M:%S %p")
+ch.setFormatter(loggerFormatter)
+APPLOGGER.addHandler(ch)
+# ========================================================================================
+
+
+def run(parameters):
+    try:
+        APPLOGGER.info("Running")
+        handle=open(parameters['genome'], "rt")
+        APPLOGGER.info("Parsing input file")
+        records=SeqIO.to_dict(SeqIO.parse(handle, "fasta"))
+        APPLOGGER.info("Extracting scaffold sequence")
+        scaffold=records[parameters['scaffold']]
+        if parameters['end_coordinate']==0:
+            parameters['end_coordinate']=len(scaffold)
+        seq=scaffold[\
+            parameters['start_coordinate']:parameters['end_coordinate']
+        ]
+        APPLOGGER.info("Writing output file")
+        with open(parameters['output'], "wb") as outhandle:
+            _=SeqIO.write(seq,outhandle,"fasta")
+        handle.close()
+    except:
+        message="Oops! Something went wrong."
+        return False, message
+    return True, "All good."
+
+
+def main():
+    parser = argparse.ArgumentParser(\
+        prog="extract.scaffold.coordinates",\
+        description='Extracts subsequence of the specified scaffold according to the given coordinates',\
+        add_help=False\
+    )
+    requiredArgs=parser.add_argument_group("{0}Required arguments{1}".format("\033[1m","\033[0m"))
+    requiredArgs.add_argument(\
+        '-g','--genome',\
+        metavar = '<assembly.fasta>',\
+        type = str,\
+        required = True,\
+        help = 'Filepath of the reference genome file to be used.')
+    requiredArgs.add_argument(\
+        '-s','--scaffold',\
+        metavar = '<name>',\
+        type = str,\
+        required = True,\
+        help = 'Name/description of the scaffold to be extracted.')
+    requiredArgs.add_argument(\
+        '-o','--OUTPUT',\
+        metavar = '<file_path>',\
+        type = str,\
+        required = True,\
+        help = 'Output file path.')
+    
+    optionalArts=parser.add_argument_group("{0}Optional arguments{1}".format("\033[1m","\033[0m"))
+    optionalArts.add_argument(\
+        '-cs','--start',\
+        metavar = '<start_coordinate>',\
+        type = int,\
+        help = 'Start positions. If left empty, starting position is 0. If both cs/ce left empty whole scaffold will be extracted.')
+    optionalArts.add_argument(\
+        '-ce','--end',\
+        metavar = '<end_coordinate>',\
+        type = int,\
+        help = 'End positions. If left empty, end position is the length of the scaffold.  If both cs/ce left empty whole scaffold will be extracted.')
+    optionalArts.add_argument(\
+        '-l','--log',\
+        metavar = '<log_level>',\
+        type = str,\
+        choices = ['INFO','DEBUG','info', 'debug'],\
+        default= 'INFO',\
+        help = 'Verbosity levels.')
+    informationGroup= parser.add_argument_group("{0}Information arguments{1}".format("\033[1m","\033[0m"))
+    informationGroup.add_argument('-v', '--version',\
+		action='version',\
+		version='{0}: Version {1}.{2}.{3}'.format(PROGRAM_NAME,VERSION,MIN_VERSION,FIX_VERSION),\
+		help="Show program's version number and exit")
+    informationGroup.add_argument('-h', '--help',\
+		action='store_true',\
+		help="Show this help message and exit")
+    args = parser.parse_args()  
+    if args.help:
+        return(0,"Finihed")
+    # Checking files
+    if args.log.upper() == 'DEBUG':
+        APPLOGGER.setLevel(logging.DEBUG)
+    else:
+        APPLOGGER.setLevel(logging.INFO)
+    if (os.path.exists(os.path.abspath(args.genome))):
+        REFFILE=os.path.abspath(args.genome)
+    else:
+        message="Reference file does not exist. Please verify. Exiiting."
+        return (-1, message)
+    OUTPUT=os.path.abspath(args.OUTPUT)
+    if (os.path.exists(OUTPUT)):
+        message="Output file exist. Not overwriting. Please verify. Exiiting."
+        return (-1, message)
+    parameters=dict()
+    parameters['output']=OUTPUT
+    parameters['genome']=REFFILE
+    parameters['scaffold']=args.scaffold
+    parameters['start_coordinate']=0
+    parameters['end_coordinate']=0
+    if args.start:
+        parameters['start_coordinate']=int(args.start)
+    if args.end:
+        parameters['end_coordinate']=int(args.end)
+    return run(parameters)
+
+if __name__ == "__main__":
+    SIGNAL_EXIT,MESSAGE=main()
+    if SIGNAL_EXIT == -1:
+        APPLOGGER.error(MESSAGE)
+    else:
+        APPLOGGER.info(MESSAGE)
+    sys.exit(SIGNAL_EXIT)

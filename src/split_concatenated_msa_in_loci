@@ -1,0 +1,121 @@
+#!/usr/bin/python
+import argparse, filetype,logging, datetime, glob, os, re, sys
+import numpy as np
+from Bio import SeqIO, Seq
+# ========================================================================================
+PROGRAM_NAME="split_concatenated_msa_in_loci"
+VERSION=1
+MIN_VERSION=0
+FIX_VERSION=0
+# ========================================================================================
+APPLOGGER = logging.getLogger(PROGRAM_NAME)
+APPLOGGER.setLevel(logging.DEBUG)
+ch = logging.StreamHandler()
+ch.setLevel(logging.DEBUG)
+loggerFormatter = logging.Formatter(\
+        fmt = "[%(asctime)s] %(levelname)s (%(funcName)s|%(lineno)d): %(message)s",\
+        datefmt = "%d/%m/%Y %I:%M:%S %p")
+ch.setFormatter(loggerFormatter)
+APPLOGGER.addHandler(ch)
+# ========================================================================================
+
+def run(parameters):
+    message="All correct."
+    APPLOGGER.info("Reading file...")
+    nloci=0
+    handle=None
+    filekind=filetype.guess(parameters['input'])
+    if filekind and filekind.extension in ['gz','GZ','gZ','Gz']:
+            APPLOGGER.info("Running gzip...")
+            handle=gzip.open(parameters['input'], "rt")
+    else:
+            handle=open(parameters['input'], "rt")
+    APPLOGGER.info("Creating output file...")
+    seqs=dict()
+    splitseq="N"*parameters['nsize']
+    APPLOGGER.info("Parsing FASTA file...")
+    for record in SeqIO.parse(handle, "fasta"):
+        APPLOGGER.info("{}\t{}".format(record.id, nloci))
+        if parameters['sample_name']:
+            if parameters['sample_name'] == record.id:
+                seqs[record.id]=[s for s in str(record.seq).split(splitseq) if len(s) >0]
+                break
+        else:
+            # Split sequences
+            seqs[record.id]=[s for s in str(record.seq).split(splitseq) if len(s) >0]
+            nloci=len(seqs[record.id])
+    handle.close()
+    # Writinh
+    APPLOGGER.info("Writing loci msa")
+    samplekeys=seqs.keys()
+    for loc in range(0, nloci-1):
+        MSA=[]
+        APPLOGGER.info("Writing locus: {}".format(loc))
+        for sample in samplekeys:
+            MSA+=[\
+                SeqIO.SeqRecord(\
+                    id=sample,\
+                    seq=Seq.Seq(seqs[sample][loc]))\
+            ]
+        out="{}/LOC_{}.fasta".format(parameters['output'], loc)
+        with open(out, "wb") as handle:
+            _=SeqIO.write(MSA, handle, "fasta")
+    return 0, "Done"
+
+################################################################################
+def main():  
+    parser = argparse.ArgumentParser(\
+        prog="{0}".format("SplitIntoPartitions"),\
+        formatter_class=argparse.RawDescriptionHelpFormatter,\
+        description="This splits multiple sequence fasta file from multiple concatenated loci into a set of loci per file.",\
+        epilog="Still under development",\
+        add_help=False
+    )
+    requiredGroup= parser.add_argument_group('Required arguments')
+    requiredGroup.add_argument('-i','--input',metavar='<Filepath>',
+        type=str,required=True,\
+        help='Replicate folder path')
+    requiredGroup.add_argument('-n','--nsize',metavar='<value>',
+        type=int,
+        required=True,\
+        help='Size of the split')
+    requiredGroup.add_argument('-o','--output',metavar='<folderpath>',
+        type=str,required=True,\
+        help='Folder path for output')
+    optionalGroup= parser.add_argument_group('Optional arguments')    
+    optionalGroup.add_argument('-s','--sample',metavar='<sample_name>',
+        type=str,\
+        help='sample identifier')
+    try:
+        args = parser.parse_args()	
+        APPLOGGER.debug(args)
+        parameters=dict()
+        # Checking files
+        if (os.path.exists(os.path.abspath(args.input))):
+            REFFILE=os.path.abspath(args.input)
+        else:
+            message="Reference file does not exist. Please verify. Exiiting."
+            return (-1, message)
+        OUTPUT=os.path.abspath(args.output)
+        if (os.path.exists(OUTPUT)):
+            message="Output file exist. Not overwriting. Please verify. Exiiting."
+            return (-1, message)
+        else:
+            os.mkdir(OUTPUT)
+        parameters['sample_name']=args.sample
+        parameters['nsize']=int(args.nsize)
+        parameters['output']=OUTPUT
+        parameters['input']=REFFILE
+        return run(parameters)
+    except Exception as e:
+        message="Parsing error. Exiting"
+        parser.print_usage()
+        return (-1, e.message)
+
+if __name__ == "__main__":
+	SIGNAL_EXIT,MESSAGE=main()
+	if SIGNAL_EXIT == -1:
+		APPLOGGER.error(MESSAGE)
+	else:
+		APPLOGGER.info(MESSAGE)
+	sys.exit(SIGNAL_EXIT)
