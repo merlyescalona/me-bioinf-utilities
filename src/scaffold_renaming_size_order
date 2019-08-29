@@ -4,7 +4,7 @@ import numpy as np
 from Bio import SeqIO
 
 # ========================================================================================
-PROGRAM_NAME="scaffold_renaming"
+PROGRAM_NAME="scaffold_renaming_size_order"
 VERSION=1
 MIN_VERSION=0
 FIX_VERSION=0
@@ -46,17 +46,22 @@ def run(parameters):
 	finalsequenceorder=[]
 	APPLOGGER.info("Renaming...")
 	counter=1
+	mt=None
 	for index in range(0,len(lensSorted)):
 		recordid=lens[index][0]
 		rec=records[recordid]
 		if "mt" in recordid or "MT" in recordid:
 			rec.id="mtDNA"
-			rec.description="mtDNA"
+			rec.description=""
+			mt=rec
 		else:
 			rec.id="SCAF_{0:0{1}d}".format(counter,totalRecordsDigits)
 			rec.description=""
 			counter+=1
-		finalsequenceorder+=[rec]
+		if not mt:
+			finalsequenceorder+=[rec]
+	if mt:
+			finalsequenceorder+=[mt]
 	APPLOGGER.info("Writing output file...")
 	with open(parameters['output'], "wb") as out:
 		_=SeqIO.write(finalsequenceorder,out, "fasta")
