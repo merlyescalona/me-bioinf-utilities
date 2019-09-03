@@ -40,21 +40,19 @@ def run(parameters):
   sequence=""
   scaffold_list=parse_scaffolds_file(parameters)
   APPLOGGER.info(len(records)) 
-  for record in records:
-    if record in scaffold_list:
-      scaffold_list.remove(record)
-      print(record)
-      sequence+=records[record].seq
+  # for record in records:
+  description="|".join(scaffold_list)
+  for scaffold in scaffold_list:
+      scaffold_list.remove(scaffold)
+      sequence+=records[scaffold].seq
       if len(scaffold_list)>0:
   			sequence+=Ns
-      else:
-        break
   APPLOGGER.info("Sequence generated...") 
   finalsequenceorder+=[\
     SeqIO.SeqRecord(\
       id="JOINED_SCAFFOLD",\
       seq=sequence,\
-      description=""
+      description=description
       )
     ]	
   APPLOGGER.info("Writing output file...")
