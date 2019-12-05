@@ -38,7 +38,8 @@ def run(parameters):
 	APPLOGGER.info("Extracting sequences...")
 	for recordid in records:
 		lens+=[(recordid,len(records[recordid].seq))]
-  # Sort lens array by size
+  	# Sort lens array by size
+	changes=[]
 	APPLOGGER.info("Sorting per scaffold length...")
 	lensSorted=sorted(lens, key=lambda x: x[1])
 	# select record - change id - print record
@@ -51,17 +52,25 @@ def run(parameters):
 		recordid=lens[index][0]
 		rec=records[recordid]
 		if "mt" in recordid or "MT" in recordid:
-			rec.id="mtDNA"
+			newname="mtDNA"
+			changes+=[(recordid, newname)]
+			rec.id=newname
 			rec.description=""
 			mt=rec
 		else:
-			rec.id="SCAF_{0:0{1}d}".format(counter,totalRecordsDigits)
+			newname="SCAF_{0:0{1}d}".format(counter,totalRecordsDigits)
+			changes+=[(recordid, newname)]
+			rec.id=newname
 			rec.description=""
 			counter+=1
 		if not mt:
 			finalsequenceorder+=[rec]
 	if mt:
 			finalsequenceorder+=[mt]
+	APPLOGGER.info("Tracking changes...")
+	with open(parameters['track'], "wb") as out:
+		for item in changes:
+			out.write("{}\t{}\n".format(item[0],item[1]))
 	APPLOGGER.info("Writing output file...")
 	with open(parameters['output'], "wb") as out:
 		_=SeqIO.write(finalsequenceorder,out, "fasta")
@@ -124,6 +133,8 @@ def main():
 			message="Output file exist. Not overwriting. Please verify. Exiiting."
 			return (-1, message)
 		parameters['output']=OUTPUT
+		parameters['track'], _=os.path.splitext(OUTPUT)
+		parameters['track']+=".nametrace.txt"
 		parameters['input']=REFFILE
 		return run(parameters)
 	except:

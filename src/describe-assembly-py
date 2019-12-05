@@ -1,0 +1,221 @@
+#! /usr/bin/python
+"""
+Merly Escalona <mmescalo@ucsc.edu>
+"""
+# Extract flank sequences to aligned them to the Human genome.
+import pysam,gzip,  datetime, collections, csv, os, sys, copy, logging,argparse, filetype
+import numpy as np
+from Bio import SeqIO, Seq
+from StringIO import StringIO
+
+PROGRAM_NAME="describe-assembly"
+VERSION=1
+MIN_VERSION=0
+FIX_VERSION=0
+# ========================================================================================
+APPLOGGER = logging.getLogger(PROGRAM_NAME)
+APPLOGGER.setLevel(logging.DEBUG)
+ch = logging.StreamHandler()
+ch.setLevel(logging.DEBUG)
+loggerFormatter = logging.Formatter(\
+    fmt = "[%(asctime)s]  %(levelname)s: %(message)s",\
+    datefmt = "%d/%m/%Y %I:%M:%S %p")
+ch.setFormatter(loggerFormatter)
+APPLOGGER.addHandler(ch)
+##########################################################################################
+nucs=['A','C','G','T']
+nuccontent={'A':0,'C':0,'G':0, 'T':0,'N':0,'OTHER':0}
+dinuccontent={ "{}{}".format(i,j):0 for i in nucs for j in nucs}
+dinuccontent["OTHERS"]=0
+##########################################################################################
+
+def get_scaffolds_stats(parameters):
+    """ Get reference file info"""
+    APPLOGGER.info("Reading scaffolds from reference file...")
+    # print("Reading scaffolds from reference file...")
+    start=datetime.datetime.now()
+    message="All correct."
+    APPLOGGER.info("Reading file...")
+    handle=None
+    filekind=filetype.guess(parameters['input'])
+    if filekind and filekind.extension in ['gz','GZ','gZ','Gz']:
+        APPLOGGER.info("Running gzip...")
+        handle=gzip.open(parameters['input'], "rt")
+    else:
+        handle=open(parameters['input'], "rt")
+        APPLOGGER.info("Creating output file...")
+    APPLOGGER.info("Parsing FASTA file...")
+    sclens=[]    
+    for record in SeqIO.parse(handle, "fasta"):
+        if (len(sclens) % 100 == 0): print(len(sclens))
+        nuc=collections.Counter(str(record.seq).upper())
+        nuccontent['A']+=nuc['A']
+        nuccontent['C']+=nuc['C']
+        nuccontent['G']+=nuc['G']
+        nuccontent['T']+=nuc['T']
+        nuccontent['N']+=nuc['N']
+        nuccontent['OTHER']+=sum([nuc[item] for item in nuc if not item in ['A','C','G','T','N'] ])
+        ###########################################################################################
+        seq_len=len(record.seq)
+        sclens+=[seq_len]
+        ###########################################################################################
+        for pos in range(0,seq_len-1):
+            try:
+                dinuccontent["{}{}".format(record.seq[pos], record.seq[pos+1])]+=1
+            except:
+                dinuccontent["OTHERS"]+=1
+    handle.close()
+    sclens.sort(reverse=True)
+    APPLOGGER.info("Done reading reference file ({}) > {}".format(INPUT, end-start))
+    # print("Done reading reference file ({}) > {}".format(INPUT, end-start))
+    return sclens
+
+# ----------------------------------------------------------------------------------------
+def get_nx(seq_lens, x=.5):
+    genome_length=sum(seq_lens)
+    l50=0;n50_tmp=0
+    while(n50_tmp<genome_length*x):
+        n50_tmp+=seq_lens[l50]
+        l50+=1
+    n50=seq_lens[l50]
+    return n50,l50
+
+def ranges(nums):
+    nums = sorted(set(nums))
+    gaps = [[s, e] for s, e in zip(nums, nums[1:]) if s+1 < e]
+    edges = iter(nums[:1] + sum(gaps, []) + nums[-1:])
+    return list(zip(edges, edges))
+
+def describe_gaps(parameters):
+    """ Get reference file info"""
+    APPLOGGER.info("Reading scaffolds from reference file...")
+    # print("Reading scaffolds from reference file...")
+    start=datetime.datetime.now()
+    message="All correct."
+    APPLOGGER.info("Reading file...")
+    handle=None
+    filekind=filetype.guess(parameters['input'])
+    if filekind and filekind.extension in ['gz','GZ','gZ','Gz']:
+        APPLOGGER.info("Running gzip...")
+        handle=gzip.open(parameters['input'], "rt")
+    else:
+        handle=open(parameters['input'], "rt")
+        APPLOGGER.info("Creating output file...")
+    APPLOGGER.info("Parsing FASTA file...")
+    gaps=dict()
+    for record in SeqIO.parse(handle, "fasta"):
+        seq=str(record.seq)
+        ns=[i for i in range(len(seq)) if seq.startswith('N', i)]
+        rngs=[ (pair[0],pair[1]+1) for pair in ranges(ns) ]
+        if len(rngs)>0:
+            gaps[record.id]=rngs
+    handle.close()
+
+
+def run(parameters):
+    # Get the gap info
+    sclens=get_scaffolds_length(parameters)
+    numGaps=len([j for i in bed.keys() for j in range(0,len(bed[i]))])
+    scaffolds=getRefereceScaffolds(INPUT,bed)
+    flankTable=getFlankTable(scaffolds,bed,READFLANK)
+    # Updating scaffolds data structure
+    for f in flankTable:
+        scaffolds[f[2]]['flanks']+=[f[1]]
+    for f in flankTable:
+        scaffolds[f[2]]['numgaps']=len(scaffolds[f[2]]['flanks'])/2
+    ###############################################################################
+    # Generating a FASTA file with all the Flanks
+    TAG=['GS', 'GE']
+    for findex in range(0,len(flankTable)):
+        FID=flankTable[findex][1]
+        s=flankTable[findex][2]
+        FS=flankTable[findex][3]
+        FE=flankTable[findex][4]
+        GS=flankTable[findex][5]
+        GE=flankTable[findex][6]
+        TAG="GS"
+        if FID % 2 ==0: TAG="GE"
+        APPLOGGER.debug("{}:{}-{}:{}-F{} (Flank={})".format(s, FS,FE,TAG,FID, READFLANK))
+    
+        if findex % 10 ==0 : APPLOGGER.debug("[{}] {}".format(datetime.datetime.now(),findex))
+        SEQUENCE= SeqIO.SeqRecord(\
+            seq= Seq.Seq(str(scaffolds[s]['seq'][FS:FE]).upper()),\
+            id="{}:{}-{}:{}-F{} (Flank={})".format(s, GS,GE,TAG,FID, READFLANK),\
+            description="{}-{}".format(FS,FE)\
+        )
+        with open(OUTPUT,"a") as handle:
+            _=SeqIO.write(SEQUENCE,handle,"fasta")
+    return 1, "Finished"
+
+def main():
+    parser = argparse.ArgumentParser(\
+        prog=PROGRAM_NAME,\
+        description='',\
+            add_help=False\
+        )
+    requiredArgs=parser.add_argument_group("{0}Required arguments{1}".format("\033[1m","\033[0m"))
+    requiredArgs.add_argument(\
+            '-i','--input',\
+            metavar = '<sequences.fasta>',\
+        type = str,\
+        required = True,\
+        help = 'Filepath of the reference genome file to be used.')
+    requiredArgs.add_argument(\
+        '-p','--prefix',\
+        metavar = '<output_prefix>',\
+        type = str,\
+        required = True,\
+        help = 'Output file path.')
+    requiredArgs.add_argument(\
+        '-o','--ouput',\
+        metavar = '<output_folder_path>',\
+        type = str,\
+        required = True,\
+        help = 'Output folder path.')
+    optionalArts=parser.add_argument_group("{0}Optional arguments{1}".format("\033[1m","\033[0m"))
+    optionalArts.add_argument(\
+        '-l','--log',\
+        metavar = '<log_level>',\
+        type = str,\
+        choices = ["INFO","DEBUG"],\
+        default= "INFO",\
+        help = 'Verbosity levels.')
+    informationGroup= parser.add_argument_group("{0}Information arguments{1}".format("\033[1m","\033[0m"))
+    informationGroup.add_argument('-v', '--version',\
+		action='version',\
+		version='{0}: Version {1}.{2}.{3}'.format(PROGRAM_NAME,VERSION,MIN_VERSION,FIX_VERSION),\
+		help="Show program's version number and exit")
+    informationGroup.add_argument('-h', '--help',\
+		action='store_true',\
+		help="Show this help message and exit")
+    args = parser.parse_args()  
+    # Checking files
+    if args.log == 'DEBUG':
+        APPLOGGER.setLevel(logging.DEBUG)
+    else:
+        APPLOGGER.setLevel(logging.INFO)
+    if (os.path.exists(os.path.abspath(args.input))):
+        INPUT=os.path.abspath(args.input)
+    else:
+        message="Reference file does not exist. Please verify. Exiiting."
+        return (-1, message)
+    OUTPUT=os.path.abspath(args.output)
+    try:    
+        os.makedirs(OUTPUT)
+    except:
+        message="Output folder exist. Not overwriting. Please verify. Exiiting."
+        return (-1, message)
+    ###########################################################################
+    parameters=dict()
+    parameters['output']=OUTPUT
+    parameters['input']=INPUT
+    parameters['prefix']=args.prefix
+    return run(parameters)
+
+if __name__ == "__main__":
+    SIGNAL_EXIT,MESSAGE=main()
+    if SIGNAL_EXIT == -1:
+        APPLOGGER.error(MESSAGE)
+    else:
+        APPLOGGER.info(MESSAGE)
+    sys.exit(SIGNAL_EXIT)

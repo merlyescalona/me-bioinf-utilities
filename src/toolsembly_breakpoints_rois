@@ -1,0 +1,222 @@
+#!/usr/bin/python
+import pysam,gzip, argparse,datetime, collections, csv, os, sys, filetype, logging, copy, re
+import numpy as np
+from Bio import SeqIO, Seq, AlignIO
+# ========================================================================================
+PROGRAM_NAME="toolsembly_breakpoints_rois"
+VERSION=1
+MIN_VERSION=0
+FIX_VERSION=0
+DESCRIPTION='''
+TOOLSEMBLY 
+==========================================================================================
+Toolset for genome assembly mischiefs
+-------------------------------------------------------------------------------
+This module generates a list of regions of interest (ROI) from an assembly.
+
+A haploid genome assembly is composed by a set of scaffolds. These at the same
+time are composed by a set of contigs joined by N sequences of different lengths.
+Such N sequences are usually called gaps, but they can have a fixed length. 
+
+Scaffolding programs usually used a fixed length gap to describe their decision of
+joining 2 contigs. 
+
+While in the validation of the scaffolding, it is possible that some of the scaffolds
+of the last version of your genome (let's call it V0) need to be broken. Hence, generating
+a new version of your genome (V1). 
+
+To verify the breaks, we might need to analyze the current mapping position of the newly
+generated scaffolds (V1) in comparison to the previos version (V0). 
+
+This module helps out with this task. It generates a BED file with the coordinates of V0 
+the regions of V1 occupied before breaking the joins. It includes the flanking gaps to be 
+used as threshold.
+
+==========================================================================================
+
+Input:
+
+- TSV file, with scaffold sizes
+- BED file with coordinates of breakpoints.
+
+Output:
+
+- BED file with ROIs.
+
+'''
+# ========================================================================================
+APPLOGGER = logging.getLogger(PROGRAM_NAME)
+APPLOGGER.setLevel(logging.DEBUG)
+ch = logging.StreamHandler()
+ch.setLevel(logging.DEBUG)
+loggerFormatter = logging.Formatter(\
+  fmt = "[%(asctime)s]  %(levelname)s (%(funcName)s|%(lineno)d): %(message)s",\
+  datefmt = "%d/%m/%Y %I:%M:%S %p")
+ch.setFormatter(loggerFormatter)
+APPLOGGER.addHandler(ch)
+#=========================================================================================
+# Read scaffold - size file
+def readScaffoldSizes(parameters):
+    APPLOGGER.info("Reading sizes file...")
+    handle=None
+    filekind=filetype.guess(parameters['scaffolds_filename'])
+    if filekind and filekind.extension in ['gz','GZ','gZ','Gz']:
+        APPLOGGER.info("Running gzip...")
+        handle=gzip.open(parameters['scaffolds_filename'], "rt")
+    else:
+        handle=open(parameters['scaffolds_filename'], "rt") 
+    scaffolds=dict()
+    for line in handle.readlines():
+        l=line.strip().split()
+        scaffolds[l[0]]=l[1]
+    handle.close()
+    APPLOGGER.info("Closing files...")
+    assert(len(scaffolds)>0)
+    return scaffolds
+
+#=========================================================================================
+# Read breaks file
+def readBreakpoints(parameters):
+    APPLOGGER.info("Reading breakpoints file...")
+    handle=None
+    filekind=filetype.guess(parameters['breakpoints_filename'])
+    if filekind and filekind.extension in ['gz','GZ','gZ','Gz']:
+        APPLOGGER.info("Running gzip...")
+        handle=gzip.open(parameters['breakpoints_filename'], "rt")
+    else:
+        handle=open(parameters['breakpoints_filename'], "rt") 
+    breakpoints=dict()
+    for line in handle.readlines():
+        l=line.strip().split()
+        try:
+            breakpoints[l[0]]+=[(l[1],l[2])]
+        except:
+            breakpoints[l[0]]=[(l[1],l[2])]
+    handle.close()
+    assert(len(breakpoints)>0)
+    return breakpoints
+
+#=========================================================================================
+# Generate ROIs
+def generateROIs(scaffolds, breakpoints):
+    APPLOGGER.info("Generating ROIs...")
+    regions={ sc:[] for sc in scaffolds.keys() }
+    for sc in breakpoints:
+        scsize=scaffolds[sc]
+        bks=breakpoints[sc]
+        # listX=[0,scsize]
+        listX=[1,scsize]
+        for bk in bks:
+            listX+=[bk[0], bk[0]]
+        listX.sort()
+        indices=range(0, len(listX),2)
+        regions[sc]=[ (listX[i], listX[i+1]) for i in indices ]
+    return regions
+
+#=========================================================================================
+# Write ROIs
+def writeROIs(parameters, rois):
+    APPLOGGER.info("Writing ROIs...")
+    if parameters['stdout']:
+        for sc in rois.keys():
+            for roi in range(0,len(rois[sc])):
+                print("{};YAGPart={}\t{}\t{}".format(sc,roi, rois[sc][roi][0], rois[sc][roi][1]))
+    else:
+        with open(parameters['output_file'], "wb") as handle:
+            for sc in rois.keys():
+                for roi in range(0,len(rois[sc])):
+                    handle.write("{};YAGPart={}\t{}\t{}\n".format(sc,roi, rois[sc][roi][0], rois[sc][roi][1]))
+
+#=========================================================================================
+# Run
+def run(parameters):
+    APPLOGGER.info("Starting...")
+    scaffolds=readScaffoldSizes(parameters)
+    breakpoints=readBreakpoints(parameters)
+    rois=generateROIs(scaffolds, breakpoints)
+    writeROIs(parameters,rois )
+    return True, "Done"
+
+def main():
+    parser = argparse.ArgumentParser(\
+    prog=PROGRAM_NAME,\
+        description=DESCRIPTION,\
+        add_help=True\
+    )
+    requiredArgs=parser.add_argument_group("{0}Required arguments{1}".format("\033[1m","\033[0m"))
+    requiredArgs.add_argument(\
+        '-ss','--scaffolds',\
+        metavar = '<filepath>',\
+        type = str,\
+        required = True,\
+        help = 'Filepath of TSV file with scaffold sizes information (accepts .gz.)')
+    requiredArgs.add_argument(\
+        '-bp','--breakpoints',\
+        metavar = '<filepath>',\
+        type = str,\
+        required = True,\
+        help = 'BED-like (Tab separated) file with the following format:\n<scaffold_name>   <start_change_position>    <end_change_position>    <sequence_if_any>\n'+\
+            'If the edits that will be made is a break, <sequence_if_any> should be the symbol: "-".')     
+
+    optionalArts=parser.add_argument_group("{0}Optional arguments{1}".format("\033[1m","\033[0m"))
+    optionalArts.add_argument(\
+        '-o','--output',\
+        metavar = '<filepath>',\
+        type = str,\
+        help = 'Output file path.')        
+    optionalArts.add_argument(\
+        '-l','--log',\
+        metavar = '<log_level>',\
+        type = str,\
+        choices = ['INFO','DEBUG'],\
+        default= 'INFO',\
+        help = 'Verbosity levels.')
+    informationGroup= parser.add_argument_group("{0}Information arguments{1}".format("\033[1m","\033[0m"))
+    informationGroup.add_argument('-v', '--version',\
+        action='version',\
+        version='{0}: Version {1}.{2}.{3}'.format(PROGRAM_NAME,VERSION,MIN_VERSION,FIX_VERSION),\
+        help="Show program's version number and exit")
+    try:
+        args=parser.parse_args()
+        parameters=dict()
+        parameters['stdout']=True
+        # Checking files
+        if args.log == 'DEBUG':
+            APPLOGGER.setLevel(logging.DEBUG)
+        else:
+            APPLOGGER.setLevel(logging.INFO)
+        APPLOGGER.debug(args)
+        # Checking input file
+        if os.path.exists(os.path.abspath(args.scaffolds)):
+            REFFILE=os.path.abspath(args.scaffolds)
+        else:
+            message="Reference file does not exist. Please verify. Exiting."
+            return (-1, message)
+        # Checking breakpoints file
+        if (os.path.exists(os.path.abspath(args.breakpoints))):
+            breakpoints=os.path.abspath(args.breakpoints)
+        else:
+            message="Breakpoints file does not exist. Please verify. Exiting."
+            return (-1, message)
+        # Checkiong output file
+        if args.output:
+            parameters['stdout']=False
+            if not (os.path.exists(os.path.abspath(args.output))):
+                OUTPUT=os.path.abspath(args.output)
+            else:
+                message="Output file exist. File will NOT be overwritten. Please verify. Exiting."
+                return (-1, message)
+            parameters['output_filename']=OUTPUT
+        parameters['scaffolds_filename']=REFFILE
+        parameters['breakpoints_filename']=breakpoints
+    except Exception as e:
+        return (-1, e.message)
+    return run(parameters)
+
+if __name__ == "__main__":
+    SIGNAL_EXIT,MESSAGE=main()
+    if SIGNAL_EXIT == -1:
+        APPLOGGER.error(MESSAGE)
+    else:
+        APPLOGGER.info(MESSAGE)
+    sys.exit(SIGNAL_EXIT)

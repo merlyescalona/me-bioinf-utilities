@@ -1,0 +1,157 @@
+#!/usr/bin/python
+import pysam,gzip, argparse,datetime, collections, csv, os, sys, filetype, logging, copy, re
+import numpy as np
+from Bio import SeqIO, Seq, AlignIO
+# ========================================================================================
+PROGRAM_NAME="toolsembly_chromosome_assignment"
+VERSION=1
+MIN_VERSION=0
+FIX_VERSION=0
+DESCRIPTION='''
+TOOLSEMBLY 
+==========================================================================================
+Toolset for genome assembly mischiefs
+-------------------------------------------------------------------------------
+Fast scaffold-chromosome assignment
+
+==========================================================================================
+
+Input:
+
+- PAF file
+
+Output:
+
+'''
+# ========================================================================================
+APPLOGGER = logging.getLogger(PROGRAM_NAME)
+APPLOGGER.setLevel(logging.DEBUG)
+ch = logging.StreamHandler()
+ch.setLevel(logging.DEBUG)
+loggerFormatter = logging.Formatter(\
+  fmt = "[%(asctime)s]  %(levelname)s (%(funcName)s|%(lineno)d): %(message)s",\
+  datefmt = "%d/%m/%Y %I:%M:%S %p")
+ch.setFormatter(loggerFormatter)
+APPLOGGER.addHandler(ch)
+#=========================================================================================
+# Read scaffold - size file
+def readPAF(parameters, MAPQ=0):
+    APPLOGGER.info("Reading sizes file...")
+    handle=None
+    filekind=filetype.guess(parameters['input'])
+    if filekind and filekind.extension in ['gz','GZ','gZ','Gz']:
+        APPLOGGER.info("Running gzip...")
+        handle=gzip.open(parameters['input'], "rt")
+    else:
+        handle=open(parameters['input'], "rt") 
+    chrs=dict()
+    for line in handle.readlines():
+        l=line.strip().split()
+        if l[11] > MAPQ:
+            try:
+                chrs[l[5]]+=[l]
+            except:
+                chrs[l[5]]=[l]
+    handle.close()
+    APPLOGGER.info("Closing files...")
+    return chrs
+
+#=========================================================================================
+
+def extractScaffoldListFromChr(aln, chr):
+    scaffolds=[]
+    for item in aln[chr]:
+        if not item[0] in scaffolds:
+            scaffolds+=[item[0]]
+    return scaffolds
+
+#=========================================================================================
+
+def extractAlignmentListFromChr(aln, chr):
+    alns=[]
+    for item in aln[chr]:
+        if not item[0] in alns:
+            alns+=[item]
+    return alns
+
+#=========================================================================================
+
+
+
+
+#=========================================================================================
+# Run
+def run(parameters):
+    APPLOGGER.info("Starting...")
+    aln=readPAF(parameters, 30)
+    return True, "Done"
+
+def main():
+    parser = argparse.ArgumentParser(\
+    prog=PROGRAM_NAME,\
+        description=DESCRIPTION,\
+        add_help=True\
+    )
+    requiredArgs=parser.add_argument_group("{0}Required arguments{1}".format("\033[1m","\033[0m"))
+    requiredArgs.add_argument(\
+        '-i','--input',\
+        metavar = '<filepath>',\
+        type = str,\
+        required = True,\
+        help = 'Filepath of PAF file with alignment (accepts .gz.)')
+    optionalArgs.add_argument(\
+        '-o','--output',\
+        metavar = '<filepath>',\
+        type = str,\
+        required = True,\
+        help = 'Output file path.')        
+
+    optionalArts=parser.add_argument_group("{0}Optional arguments{1}".format("\033[1m","\033[0m"))
+    optionalArts.add_argument(\
+        '-l','--log',\
+        metavar = '<log_level>',\
+        type = str,\
+        choices = ['INFO','DEBUG'],\
+        default= 'INFO',\
+        help = 'Verbosity levels.')
+    informationGroup= parser.add_argument_group("{0}Information arguments{1}".format("\033[1m","\033[0m"))
+    informationGroup.add_argument('-v', '--version',\
+        action='version',\
+        version='{0}: Version {1}.{2}.{3}'.format(PROGRAM_NAME,VERSION,MIN_VERSION,FIX_VERSION),\
+        help="Show program's version number and exit")
+    parameters=dict()
+    parameters['output']=""
+    parameters['input']=""
+    try:
+        args=parser.parse_args()
+        parameters=dict()
+        # Checking files
+        if args.log == 'DEBUG':
+            APPLOGGER.setLevel(logging.DEBUG)
+        else:
+            APPLOGGER.setLevel(logging.INFO)
+        APPLOGGER.debug(args)
+        # Checking input file
+        if os.path.exists(os.path.abspath(args.input)):
+            REFFILE=os.path.abspath(args.input)
+        else:
+            message="Reference file does not exist. Please verify. Exiting."
+            return (-1, message)
+        # Checkiong output file
+        if not (os.path.exists(os.path.abspath(args.output))):
+            OUTPUT=os.path.abspath(args.output)
+            parameters['output_filename']=OUTPUT
+        else:
+            message="Output file exist. File will NOT be overwritten. Please verify. Exiting."
+            return (-1, message)
+    except Exception as e:
+        return (-1, e.message)
+    return run(parameters)
+
+if __name__ == "__main__":
+    SIGNAL_EXIT,MESSAGE=main()
+    if SIGNAL_EXIT == -1:
+        APPLOGGER.error(MESSAGE)
+    else:
+        APPLOGGER.info(MESSAGE)
+    sys.exit(SIGNAL_EXIT)

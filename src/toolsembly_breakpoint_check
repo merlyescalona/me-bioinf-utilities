@@ -1,0 +1,450 @@
+#!/usr/bin/python
+import pysam,gzip, argparse,datetime, collections, csv, copy, os, time,sys, errno,filetype, logging
+import numpy as np
+from Bio import SeqIO, Seq, AlignIO
+# ========================================================================================
+PROGRAM_NAME="toolsembly_breakpoint_check"
+VERSION=1
+MIN_VERSION=0
+FIX_VERSION=0
+DESCRIPTION=""
+# ========================================================================================
+APPLOGGER = logging.getLogger(PROGRAM_NAME)
+APPLOGGER.setLevel(logging.DEBUG)
+ch = logging.StreamHandler()
+ch.setLevel(logging.DEBUG)
+loggerFormatter = logging.Formatter(\
+  fmt = "[%(asctime)s]  %(levelname)s (%(funcName)s|%(lineno)d): %(message)s",\
+  datefmt = "%d/%m/%Y %I:%M:%S %p")
+ch.setFormatter(loggerFormatter)
+APPLOGGER.addHandler(ch)
+#=========================================================================================
+TAG="YAGPart" # This should be user-given
+# Also assuming the subscaffold tag is separated by ";" - last piece is my TAG so 
+# The rest of the description is the original descritption
+#=========================================================================================
+def readBreakpoints(parameters):
+    APPLOGGER.info("Reading breakpoints file...")
+    handle=None
+    filekind=filetype.guess(parameters['breakpoints'])
+    if filekind and filekind.extension in ['gz','GZ','gZ','Gz']:
+        APPLOGGER.info("Running gzip...")
+        handle=gzip.open(parameters['breakpoints'], "rt")
+    else:
+        handle=open(parameters['breakpoints'], "rt") 
+    breakpoints=[]
+    for line in handle.readlines():
+        l=line.strip().split()
+        breakpoints+=[l]
+    handle.close()
+    return breakpoints
+
+#=========================================================================================
+
+def getNumberBreakpointsPerScaffold(breakpoints):
+    tabBPperSC=dict()
+    for line in breakpoints:
+        try:
+            tabBPperSC[line[0]]+=1
+        except:
+            tabBPperSC[line[0]]=1
+    return tabBPperSC
+
+#=========================================================================================
+
+def readPAFfile(filename):
+    APPLOGGER.info("Reading PAF file: {} ...".format(filename))
+    handle=None
+    filekind=filetype.guess(filename)
+    if filekind and filekind.extension in ['gz','GZ','gZ','Gz']:
+        APPLOGGER.info("Running gzip...")
+        handle=gzip.open(filename, "rt")
+    else:
+        handle=open(filename, "rt") 
+    PAF=dict()
+    for line in handle.readlines()[1:]:
+        l=line.strip().split()
+        if not ((l[4]=="na") or (l[5]=="na") or (l[6]=="na") or (l[7]=="na") or (l[8]=="na")):
+            target=l[1]
+            query=l[0]
+            item={\
+                'qname':l[0],\
+                'qlen':int(l[3]),
+                'qstart':int(l[4]),\
+                'qstop':int(l[5]),\
+                'strand':l[2],\
+                'tname':target,\
+                'tlen':int(l[6]),\
+                'tstart':int(l[7]),\
+                'tstop':int(l[8])\
+            }
+            # I should have a single query-target
+            try:
+                test=PAF[target]
+            except:
+                PAF[target]={}
+            try:
+                test=PAF[target][query]
+            except:
+                PAF[target][query]={}
+            PAF[target][query]=item
+    handle.close()
+    return PAF
+
+#=========================================================================================
+
+def filterPAFsubscaffolds(paf):
+    paf2=copy.deepcopy(paf)
+    for target in paf:
+        for query in paf[target]:
+            if not TAG in query:
+                del paf2[target][query]
+        if len(paf2[target])==0:
+            del paf2[target]
+    return paf2
+
+#=========================================================================================
+
+def filterPAFtarget(paf0, paf1_filtered):
+    paf_out=copy.deepcopy(paf0)
+    queries=[ ";".join(query.split(";")[:-1]) for target in paf1_filtered for query in paf1_filtered[target] ]
+    for target in paf0:
+        for query in paf0[target]:
+            if not query in queries:
+                del paf_out[target][query]
+        if len(paf_out[target])==0:
+            del paf_out[target]
+    return paf_out
+
+#=========================================================================================
+
+def transformPAGsubscaffolds(paf):
+    paf_out={ target:{} for target in paf.keys() }
+    for target in paf:
+        for query in paf[target]:
+            q=";".join(query.split(";")[:-1])
+            try:
+                test=paf_out[target][q]
+            except:
+                paf_out[target][q]={}
+            try:
+                test=paf_out[target][q][query]
+            except:
+                paf_out[target][q][query]=paf[target][query]
+    return paf_out
+
+#=========================================================================================
+
+def extractBreakpointsFromScaffold(breakpoints,scaffold):
+    output_list=[]
+    for iLine in range(0,len(breakpoints)):
+        if breakpoints[iLine][0]==scaffold:
+            output_list+=[breakpoints[iLine]]
+    APPLOGGER.debug("[{}] # breakpoints: {}".format(scaffold, len(output_list)))
+    return output_list
+
+#=========================================================================================
+
+def getTarget(v0,scaffold):
+    target_list=None
+    for target in v0:
+        for query in v0[target]:
+            if query==scaffold:
+                target_list=target
+                break
+    return target_list
+
+#=========================================================================================
+
+def getCoordinateOrderSubscaffoldsTarget(paf_transformed,target,scaffold):
+    # This returns a list of pairs (order, subscaffoldId/Part)
+    mappings=[
+        paf_transformed[target][scaffold][subsc]
+        for subsc in paf_transformed[target][scaffold].keys()
+    ]
+    for subsc in mappings:
+        subsc['part']=int(subsc['qname'].split(";")[-1].split("=")[-1])
+    mappings.sort(key = lambda i: min(i['tstart'], i['tstop']))
+    return [ (item, mappings[item]['part']) for item in range(0, len(mappings))]
+    
+#=========================================================================================
+
+def checkQueriesInTarget(v0,v1,breakpoints):
+    APPLOGGER.info("checkQueriesInTarget")
+    subscaffolds=[q  for t in v1 for q in v1[t]]
+    v1_transform=transformPAGsubscaffolds(v1)
+    finalBreakpoints=[]
+    for subsc in subscaffolds:
+        APPLOGGER.debug("[{}]".format(subsc))
+        # time.sleep(1)
+        scaffold=";".join(subsc.split(";")[:-1])
+        index=int(subsc.split(";")[-1].split("=")[-1])
+        totalParts=len(extractBreakpointsFromScaffold(breakpoints,scaffold))
+        parts=[ "{};{}={}".format(scaffold,TAG,i) for i in range(0,totalParts)]
+        # identifying targets
+        target=getTarget(v1,subsc)
+        originalTarget=getTarget(v0,scaffold)
+        # 1. First major check. originalTarget == taget:
+        breakpointIndex=[]
+        if originalTarget==target:
+            APPLOGGER.debug("[{}] S={} | T={} | OT={}: Same mapping target".format(subsc,scaffold,target, originalTarget))
+            strand=v1[target][subsc]['strand']
+            # time.sleep(1)
+            originalStrand=v0[originalTarget][scaffold]['strand']
+            # 3. Identify breakpointIndices 
+            if  originalStrand == strand: 
+                # If they are the same I'll keep checking the other conditions
+                # if they are not, they go to the next block and brakes will be made
+                APPLOGGER.debug("[{}] I={}: No inversion involved. Checking within target".format(subsc, index))
+                # time.sleep(1)
+                # Get order of all the subscaffolds within this target
+                listOrderPart=getCoordinateOrderSubscaffoldsTarget(v1_transform,target,scaffold)
+                # The output of this is a list of pairs (order, subscaffoldId/Part)
+                APPLOGGER.debug("[{}] I={}: {}".format(subsc, index, listOrderPart))
+                # time.sleep(1)
+                if index==0:
+                    # Index 0 and the order of the part is not where it is supposed to be
+                    if not(listOrderPart[0][1] == 0):
+                        breakpointIndex=[0]
+                        APPLOGGER.debug("[{}] I={} | First block | Order: {}/{} | Strand: {}/{} | Target: {}/{} = Break".format(subsc, index, index, listOrderPart[0][1], strand, originalStrand, target, originalTarget))
+                elif index >0 and index < (totalParts-1):
+                    APPLOGGER.debug("[{}] I={}: Checking mid block".format(subsc, index))
+                    # time.sleep(1)
+                    prevTarget=getTarget(v1,"{};{}={}".format(scaffold,TAG, index-1) )
+                    nextTarget=getTarget(v1,"{};{}={}".format(scaffold,TAG, index+1) )
+                    prevOrder=[listOrderPart[j][1] for j in range(0, len(listOrderPart)) if listOrderPart[j][1] == index-1]
+                    nextOrder=[listOrderPart[j][1] for j in range(0, len(listOrderPart)) if listOrderPart[j][1] == index+1][0]
+                    myOrder=[listOrderPart[j][1] for j in range(0, len(listOrderPart)) if listOrderPart[j][1] == index][0]
+                    APPLOGGER.debug("[{}] Orders => current: {} | next: {} | previous: {}".format(subsc,myOrder, prevOrder,nextOrder))
+                    # If any of the subscaffolds mappe to another target
+                    if not prevTarget == target:
+                        APPLOGGER.debug("[{}] I={} | Mid block. Previous target |  Order: {}/{} | Strand: {}/{} | PrevTarget: {}/{} = Break".format(subsc, index, myOrder, prevOrder, strand, originalStrand, target, originalTarget))
+                        # time.sleep(1)
+                        breakpointIndex+=[index-1]
+                    if not nextTarget == target:
+                        breakpointIndex+=[index]
+                        APPLOGGER.debug("[{}] I={} | Mid block. Next target | Order: {}/{} | Strand: {}/{} | NextTarget: {}/{} = Break".format(subsc, index, myOrder, nextOrder, strand, originalStrand, target, originalTarget))
+                        # time.sleep(1)
+                    # If any of subscaffolds mapped to same target
+                    if not (((myOrder + 1)  == prevOrder) or  ((myOrder -1) == prevOrder )) :
+                        breakpointIndex+=[index-1]
+                        APPLOGGER.debug("[{}] I={} | Mid block. Previous order mismatch | Order: {}/{} | Strand: {}/{} | NextTarget: {}/{} = Break".format(subsc, index, myOrder, prevOrder, strand, originalStrand, target, originalTarget))
+                        # time.sleep(1)
+                    if not (((myOrder + 1)  == nextOrder) or  ((myOrder -1) == nextOrder )):
+                        breakpointIndex+=[index]                    
+                        APPLOGGER.debug("[{}] I={} | Mid block. Next order mismatch | Order: {}/{} | Strand: {}/{} | NextTarget: {}/{} = Break".format(subsc, index, myOrder, nextOrder, strand, originalStrand, target, originalTarget))
+                        # time.sleep(1)
+                else: # index == totalParts
+                    lastOrdered=listOrderPart[-1][1]
+                    firstOrdered=listOrderPart[0][1]
+                    if not( lastOrdered == index or firstOrdered == index):
+                        prevOrder=[listOrderPart[j][1] for j in range(0, len(listOrderPart)) if listOrderPart[j][1] == index-1]
+                        myOrder=[listOrderPart[j][1] for j in range(0, len(listOrderPart)) if listOrderPart[j][1] == index]
+                        APPLOGGER.debug("[{}] I={} | Order: {} - {}/{} | Strand: {}/{} | Targets: {}/{} = Break".format(subsc, index, index, firstOrdered,lastOrdered, strand, originalStrand, target, originalTarget))
+                        # time.sleep(1)
+                        breakpointIndex+=[totalParts-1]                                 
+            else: # NOT current Strand == original Strand
+                APPLOGGER.debug("[{}] I={}: Inversion {}/{} [original/current]".format(subsc,index,originalStrand,strand))
+                # time.sleep(1)
+                # If they are not the same I'll check what's the position of the subscaffold
+                # related to the original scaffold to to identify whether there's 
+                # 1 or 2 breakpoints to be added
+                if index==0: # This is the first subscaffold
+                    APPLOGGER.debug("[{}] I={}: First block = Break".format(subsc, index))
+                    # time.sleep(1)
+                    breakpointIndex=[0]
+                elif index >0 and index < (totalParts-1): # this is a mid position subsc
+                    APPLOGGER.debug("[{}] I={}: Mid. block = Break".format(subsc, index))
+                    # time.sleep(1)
+                    breakpointIndex=[index-1, index]
+                else: # index == totalParts 
+                    APPLOGGER.debug("[{}] I={}: Last block = Break".format(subsc, index))
+                    # time.sleep(1)
+                    breakpointIndex=[totalParts-1]
+        else: # target != originalTarget
+            APPLOGGER.debug("[{}] S={} | T={} | OT={}: NOT the same mapping target".format(subsc,scaffold,target, originalTarget))
+            if index==0: # This is the first subscaffold
+                APPLOGGER.debug("[{}] I={}: First block | First Block = Break".format(subsc, index))
+                # time.sleep(1)
+                breakpointIndex+=[0]
+            elif index >0 and index < (totalParts-1): # this is a mid position subsc
+                prevTarget=getTarget(v1,"{};{}={}".format(scaffold,TAG, index-1) )
+                nextTarget=getTarget(v1,"{};{}={}".format(scaffold,TAG, index+1) )
+                # If any of the subscaffolds mappe to another target
+                if not prevTarget == target:
+                    APPLOGGER.debug("[{}] I={}: Mid block | PrevTarget = Break".format(subsc, index))
+                    # time.sleep(1)
+                    breakpointIndex+=[index-1]
+                if not nextTarget == target:
+                    APPLOGGER.debug("[{}] I={}: Mid. block | Next Target = Break".format(subsc, index))
+                    # time.sleep(1)
+                    breakpointIndex+=[index]
+                # breakpointIndex+=[index-1, index]
+            else: # index == totalParts 
+                APPLOGGER.debug("[{}] I={}: Last block = Break".format(subsc, index))
+                # time.sleep(1)
+                breakpointIndex+=[totalParts-1]
+        # Add breakppoints to finalset
+        breakpointIndex=list(set(breakpointIndex))
+        currentSCbreakpoints=extractBreakpointsFromScaffold(breakpoints,scaffold)
+        currentSCbreakpoints.sort(key = lambda i: i[1])
+        APPLOGGER.debug("[{}] I={} | Breakpoint indices: {}".format(subsc, index, breakpointIndex))
+        APPLOGGER.debug(currentSCbreakpoints)
+        finalBreakpoints+=[ currentSCbreakpoints[bpIndex] for bpIndex in breakpointIndex ]
+    finallist=[]
+    for l in finalBreakpoints:
+        if not l in finallist:
+            finallist+=[l]
+    # Once all of the subscaffolds have been checked 
+    # the list of breakpoints should be filter to leave only unique breakpoints\
+    # APPLOGGER.debug(finallist)
+    finallist.sort(key = lambda x: (x[0], int(x[1])))
+    return finallist
+
+def writeFinalBreakpoints(parameters, finalBreakpoints):
+    APPLOGGER.info("Writing output")
+    if parameters['stdout']:
+        for item in range(0, len(finalBreakpoints)):
+            print("{}\t{}\t{}\t-".format(\
+                finalBreakpoints[item][0],\
+                finalBreakpoints[item][1],\
+                finalBreakpoints[item][2]\
+                ))
+    else:      
+        with open(parameters['output'], 'wb') as handle:
+            for item in range(0, len(finalBreakpoints)):
+                handle.write("{}\t{}\t{}\t-".format(\
+                    finalBreakpoints[item][0],\
+                    finalBreakpoints[item][1],\
+                    finalBreakpoints[item][2]\
+                    ))
+
+
+#=========================================================================================
+
+def run(parameters):
+    APPLOGGER.info("Starting")
+    # Getting info of the breakpoints
+    breakpoints=readBreakpoints(parameters)
+    breakpointsPerScaffold=getNumberBreakpointsPerScaffold(breakpoints)
+    if parameters['verbose']:
+        APPLOGGER.info("Breakpoints per scaffold\nScaffonld\tBreakpoints\tParts")
+        for item in breakpointsPerScaffold:
+            APPLOGGER.info("{}\t{}\t{}".format(item, breakpointsPerScaffold[item], breakpointsPerScaffold[item]+1))
+    v0=readPAFfile(parameters['version0'])
+    v1=readPAFfile(parameters['version1'])
+    # Checking number of elements
+    APPLOGGER.info("Number of possible breakpoints: {}".format(len(breakpoints)))
+    APPLOGGER.info("Records on V0: {}".format(sum([ len(v0[i].keys()) for i in v0 ])))
+    APPLOGGER.info("Records on V1: {}".format(sum([ len(v1[i].keys()) for i in v1 ])))
+    # Filtering datasets = Keep only those records where a SUBSCAFFOLD exists (YAGPart)
+    v1_filter=filterPAFsubscaffolds(v1)
+    # v0_filter=filterPAFtarget(v0,v1_filter)
+    APPLOGGER.info("After filtering")
+    # APPLOGGER.info("Records on V0: {}".format(sum([ len(v0_filter[i].keys()) for i in v0_filter ])))
+    APPLOGGER.info("Records on V1: {}".format(sum([ len(v1_filter[i].keys()) for i in v1_filter ])))
+    # Tranform PAF subscaffolds so scaffold names between PAF dictionaries match.
+    APPLOGGER.info("After transformation")
+    # Transformation is being made inside the function
+    finalBreakpoints=checkQueriesInTarget(v0, v1_filter, breakpoints)
+    writeFinalBreakpoints(parameters,finalBreakpoints)
+    APPLOGGER.info("Done")
+
+def main():
+    parser = argparse.ArgumentParser(\
+    prog=PROGRAM_NAME,\
+        description=DESCRIPTION,\
+        add_help=True\
+    )
+    requiredArgs=parser.add_argument_group("{0}Required arguments{1}".format("\033[1m","\033[0m"))
+    requiredArgs.add_argument(\
+        '-0','--version0',\
+        metavar = '<filepath>',\
+        type = str,\
+        required = True,\
+        help = 'PAF-like association table from DGENIES after mapping version 0 to the corresponding reference (accepts .gz.)')
+    
+    requiredArgs.add_argument(\
+        '-1','--version1',\
+        metavar = '<filepath>',\
+        type = str,\
+        required = True,\
+        help = 'PAF-like association table from DGENIES after mapping version 1 to the corresponding reference (accepts .gz.)')
+    requiredArgs.add_argument(\
+        '-bp','--breakpoints',\
+        metavar = '<filepath>',\
+        type = str,\
+        required = True,\
+        help = 'BED-like (Tab separated) file with the following format:\n<scaffold_name>   <start_change_position>    <end_change_position>    <sequence_if_any>\n'+\
+            'If the edits that will be made is a break, <sequence_if_any> should be the symbol: "-".')     
+    optionalArts=parser.add_argument_group("{0}Optional arguments{1}".format("\033[1m","\033[0m"))
+    optionalArts.add_argument(\
+        '-o','--output',\
+        metavar = '<filepath>',\
+        type = str,\
+        help = 'Output file path.')        
+    optionalArts.add_argument(\
+        '-vv','--verbosity',\
+        action ='store_true',\
+        help = 'Print out content of data structures.')        
+    optionalArts.add_argument(\
+        '-l','--log',\
+        metavar = '<log_level>',\
+        type = str,\
+        choices = ['INFO','DEBUG'],\
+        default= 'INFO',\
+        help = 'Level of loggings.')
+    informationGroup= parser.add_argument_group("{0}Information arguments{1}".format("\033[1m","\033[0m"))
+    informationGroup.add_argument('-v', '--version',\
+        action='version',\
+        version='{0}: Version {1}.{2}.{3}'.format(PROGRAM_NAME,VERSION,MIN_VERSION,FIX_VERSION),\
+        help="Show program's version number and exit")
+    #####################################################################################
+    parameters=dict()
+    parameters['stdout']=True
+    parameters['version0']=""
+    parameters['version1']=""
+    parameters['breakpoints']=""
+    parameters['output']=""
+    parameters['verbose']=None
+    ######################################################################################
+    try:
+        args=parser.parse_args()
+        # Checking input files
+        if os.path.exists(os.path.abspath(args.version0)):
+            parameters['version0']=os.path.abspath(args.version0)
+        else:
+            message="PAF-like file for version 0 does not exist. Please verify. Exiting."
+            raise IOError("{} | {} ".format(args.version0, message))
+        if os.path.exists(os.path.abspath(args.version1)):
+            parameters['version1']=os.path.abspath(args.version1)
+        else:
+            message="PAF-like file for version 1 does not exist. Please verify. Exiting."
+            raise IOError("{} | {} ".format(args.version1, message))
+        if os.path.exists(os.path.abspath(args.breakpoints)):
+            parameters['breakpoints']=os.path.abspath(args.breakpoints)
+        else:
+            message="BED file with the description of the breakpoints does not exist. Please verify. Exiting."
+            raise IOError("{} | {} ".format(args.breakpoints, message))
+        try:
+            parameters['verbose']=True
+        except AttributeError as ae:
+            parameters['verbose']=False
+        # Checkiong output file
+        if args.output:
+            parameters['stdout']=False
+            if not (os.path.exists(os.path.abspath(args.output))):
+                parameters['output']=os.path.abspath(args.output)
+            else:
+                message="Output file exist. File will NOT be overwritten. Please verify. Exiting."
+                raise OSError(message)
+        ##################################################################################
+        run(parameters)
+    except Exception as e:
+        raise
+
+if __name__ == "__main__":
+    main()
+
+
+# example /media/merly/misato/git/me-bioinf-utilities/src/toolsembly_breakpoint_check  -0 NA19240_GRCh38.p13.short_assoc.tsv -1 NA19240_9.1_GRCh38.p13.short_assoc.tsv  -bp NA19240.breaks.bed -l DEBUG > out.all.txt
