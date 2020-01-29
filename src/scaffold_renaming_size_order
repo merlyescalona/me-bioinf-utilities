@@ -7,7 +7,7 @@ from Bio import SeqIO
 PROGRAM_NAME="scaffold_renaming_size_order"
 VERSION=1
 MIN_VERSION=0
-FIX_VERSION=0
+FIX_VERSION=3
 # ========================================================================================
 APPLOGGER = logging.getLogger(PROGRAM_NAME)
 APPLOGGER.setLevel(logging.DEBUG)
@@ -41,7 +41,8 @@ def run(parameters):
   	# Sort lens array by size
 	changes=[]
 	APPLOGGER.info("Sorting per scaffold length...")
-	lensSorted=sorted(lens, key=lambda x: x[1])
+	lens.sort(key=lambda x: x[1], reverse=True)
+	lensSorted=lens
 	# select record - change id - print record
 	totalRecordsDigits=len(str(len(records)))
 	finalsequenceorder=[]
@@ -56,17 +57,13 @@ def run(parameters):
 			changes+=[(recordid, newname)]
 			rec.id=newname
 			rec.description=""
-			mt=rec
 		else:
 			newname="SCAF_{0:0{1}d}".format(counter,totalRecordsDigits)
 			changes+=[(recordid, newname)]
 			rec.id=newname
 			rec.description=""
 			counter+=1
-		if not mt:
 			finalsequenceorder+=[rec]
-	if mt:
-			finalsequenceorder+=[mt]
 	APPLOGGER.info("Tracking changes...")
 	with open(parameters['track'], "wb") as out:
 		for item in changes:
