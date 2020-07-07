@@ -1,0 +1,19 @@
+#!/usr/bin/python
+import pysam,gzip,  argparse,datetime, collections, csv, os, sys, logging
+import numpy as np
+from Bio import SeqIO
+
+# ========================================================================================
+parameters=dict()
+parameters['input']="/scratch3/Primates/Bonobo/assemblies/bonobo.13.fasta"
+
+
+handle=open(parameters['input'], "rt")
+
+for record in SeqIO.parse(handle, "fasta"):
+    outputfile="/scratch3/Primates/Bonobo/polishing/round3/datasets/{}/{}.fasta".format(record.id,record.id)
+    print(outputfile)
+    _=SeqIO.write(record,outputfile,"fasta")
+
+
+handle.close()
